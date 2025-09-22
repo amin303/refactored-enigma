@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Links Tracker (GitHub Pages + Supabase)</title>
+  <style>
+    body{font-family: system-ui,Segoe UI,Roboto,Arial;max-width:900px;margin:24px auto;padding:0 16px;color:#111}
+    header{display:flex;justify-content:space-between;align-items:center}
+    .card{border:1px solid #eee;padding:16px;border-radius:8px;margin-top:12px}
+    button{padding:8px 12px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer}
+    .btn-green{background:#0b6b3a;color:#fff;border-color:#0b6b3a}
+    ul{list-style:none;padding:0}
+    li{margin:8px 0;display:flex;gap:8px;align-items:center}
+    .clicked {opacity:0.6;text-decoration:line-through}
+    .small{font-size:0.9rem;color:#555}
+    input{padding:8px;margin-right:8px}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>My Links Tracker</h1>
+    <div id="auth-area" class="small"></div>
+  </header>
+
+  <section id="auth-card" class="card">
+    <div id="signed-out">
+      <h3>Sign up / Log in</h3>
+      <input id="email" placeholder="email" type="email"/>
+      <input id="password" placeholder="password" type="password"/>
+      <button id="btn-signup">Sign up</button>
+      <button id="btn-login">Log in</button>
+      <p class="small">(Supabase sends a confirmation email by default if enabled)</p>
+    </div>
+
+    <div id="signed-in" style="display:none">
+      <div><strong id="user-email"></strong></div>
+      <button id="btn-logout">Log out</button>
+    </div>
+  </section>
+
+  <section id="links-card" class="card" style="display:none">
+    <h3>Links (click will open in new tab and record the click)</h3>
+    <ul id="links-list"></ul>
+  </section>
+
+  <section id="dashboard-card" class="card" style="display:none">
+    <h3>My Clicks</h3>
+    <ul id="clicks-list"></ul>
+  </section>
+
+  <!-- Supabase JS -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js"></script>
+  <script>
+    const SUPABASE_URL = 'https://YOUR_SUPABASE_URL.supabase.co';
+    const SUPABASE_ANON_KEY = 'YOUR_ANON_PUBLIC_KEY';
+    const supabase = supabaseJs.createClient ? supabaseJs.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    const emailEl = document.getElementById('email');
+    const passEl = document.getElementById('password');
+    const btnSignup = document.getElementById('btn-signup');
+    const btnLogin = document.getElementById('btn-login');
+    const btnLogout = document.getElementById('btn-logout');
+    const signedOutDiv = document.getElementById('signed-out');
+    const signedInDiv = document.getElementById('signed-in');
+    const userEmailEl = document.getElementById('user-email');
+    const authArea = document.getElementById('auth-area');
+    const linksCard = document.getElementById('links-card');
+    const linksList = document.getElementById('links-list');
+    const dashboardCard = document.getElementById('dashboard-card');
+    const clicksList = document.getElementById('clicks-list');
+
+    let LINKS = [];
+    let USER = null;
+    let USER_CLICKED_SET = new Set();
+
+    btnSignup.onclick = async () => {
+      const email = emailEl.value.trim();
+      const password = passEl.value;
+      if(!email || !password){ alert('Enter email & password'); return; }
+      const { error } = await supabase.auth.signUp({ email, password });
+      if(error){ alert('Error: ' + error.message); console.error(error); return; }
+      alert('Signup request sent. Check your email (if confirmation enabled).');
+    };
+
+    btnLogin.onclick = async () => {
+      const email = emailEl.value.trim();
+      const password = passEl.value;
+      if(!email || !password){ alert('Enter email & password'); return; }
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if(error){ alert('Login error: ' + error.message); console.error(error); return; }
+    };
+
+    btnLogout.onclick = async () => { await supabase.auth.signOut(); };
+
+    supabase.auth.onAuthStateChange((event, session) => {
+      if(session && session.user){ setUser(session.user); } else { setUser(null); }
+    });
+
+    async function init(){
+      const { data } = await supabase.auth.getUser();
+      const user = data?.user ?? null;
+      setUser(user);
+      await loadLinks();
+    }
+
+    function setUser(user){
+      USER = user;
+      if(user){
+        signedOutDiv.style.display = 'none';
+        signedInDiv.style.display = 'block';
+        userEmailEl.textContent = user.email;
+        authArea.textContent = 'Signed in';
+        linksCard.style.display = 'block';
+        dashboardCard.style.display = 'block';
+        fetchUserClicks();
+      } else {
+        signedOutDiv.style.display = 'block';
+        signedInDiv.style.display = 'none';
+        userEmailEl.textContent = '';
+        authArea.textContent = 'Not signed in';
+        linksCard.style.display = 'block';
+        dashboardCard.style.display = 'none';
+        USER_CLICKED_SET = new Set();
+        renderLinks();
+      }
+    }
+
+    async function loadLinks(){
+      const { data } = await supabase.from('links').select('*').order('id');
+      LINKS = data || [];
+      renderLinks();
+    }
+
+    function renderLinks(){
+      linksList.innerHTML = '';
+      LINKS.forEach(link => {
+        const li = document.createElement('li');
+        const btn = document.createElement('button');
+        btn.textContent = link.label + ' →';
+        btn.dataset.id = link.id;
+        btn.style.minWidth = '200px';
+        btn.onclick = async (e) => {
+          window.open(link.url, '_blank');
+          if(!USER){ alert('Please login to record this click.'); return; }
+          await recordClick(link.id);
+        };
+        if(USER_CLICKED_SET.has(link.id)) {
+          btn.classList.add('clicked');
+          const mark = document.createElement('span'); mark.textContent = ' ✓'; mark.className='small';
+          li.appendChild(btn); li.appendChild(mark);
+        } else { li.appendChild(btn); }
+        const info = document.createElement('div'); info.className='small'; info.textContent = link.url;
+        li.appendChild(info);
+        linksList.appendChild(li);
+      });
+    }
+
+    async function recordClick(linkId){
+      if(!USER) return;
+      const payload = { user_id: USER.id, link_id: linkId, clicked_at: new Date().toISOString() };
+      const { error } = await supabase.from('user_link_clicks').upsert(payload);
+      if(error){ console.error('recordClick error', error); }
+      else { USER_CLICKED_SET.add(linkId); renderLinks(); await fetchUserClicks(); }
+    }
+
+    async function fetchUserClicks(){
+      if(!USER) return;
+      const { data } = await supabase.from('user_link_clicks').select('link_id, clicked_at').eq('user_id', USER.id);
+      const rows = data || [];
+      USER_CLICKED_SET = new Set(rows.map(r => r.link_id));
+      renderLinks(); renderClicksList(rows);
+    }
+
+    function renderClicksList(rows){
+      clicksList.innerHTML = '';
+      LINKS.forEach(link => {
+        const li = document.createElement('li');
+        const label = document.createElement('div');
+        label.textContent = link.label;
+        const status = document.createElement('div');
+        const row = rows.find(r => r.link_id === link.id);
+        status.textContent = row ? 'Clicked at: ' + new Date(row.clicked_at).toLocaleString() : 'Not clicked yet';
+        status.className = 'small';
+        li.appendChild(label); li.appendChild(status);
+        clicksList.appendChild(li);
+      });
+    }
+
+    init();
+  </script>
+</body>
+</html>
